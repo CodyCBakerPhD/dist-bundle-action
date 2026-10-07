@@ -1,4 +1,4 @@
-name: Dist bundle to orphan branch
+name: Distribute bundle to orphan branch
 description: Compress repository content into one file and force-push it alone to an orphan branch for CDN distribution.
 
 branding:
