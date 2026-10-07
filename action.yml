@@ -1,0 +1,74 @@
+name: Distribute bundle to orphan branch
+description: Compress repository content into one file and force-push it alone to an orphan branch for CDN distribution.
+
+branding:
+  icon: package
+  color: blue
+
+inputs:
+  paths:
+    description: >-
+      Newline-separated files, directories or glob patterns to bundle, relative to the repository root. A directory
+      contributes every file beneath it, or only its `.json` files for the `json.gz` format.
+    required: true
+  format:
+    description: >-
+      `tar.gz` for a gzipped tarball of the files as they are, or `json.gz` for one minified, gzipped JSON object
+      mapping each file's path to its parsed content.
+    required: false
+    default: tar.gz
+  filename:
+    description: Name of the bundle on the branch. Empty uses `content.` followed by the format.
+    required: false
+    default: ""
+  branch:
+    description: Orphan branch to force-push the bundle to. It only ever holds one commit with one file.
+    required: false
+    default: dist
+  commit-message:
+    description: Message for the branch's commit.
+    required: false
+    default: update dist bundle [skip ci]
+  push:
+    description: Set to `false` to build the bundle and report its `path` without publishing it.
+    required: false
+    default: "true"
+
+outputs:
+  path:
+    description: Local path of the built bundle.
+    value: ${{ steps.bundle.outputs.path }}
+  pushed:
+    description: "`true` when a new commit was pushed, `false` when the branch already held this exact bundle."
+    value: ${{ steps.bundle.outputs.pushed }}
+  commit:
+    description: The commit pushed to the branch. Empty when nothing was pushed.
+    value: ${{ steps.bundle.outputs.commit }}
+
+runs:
+  using: composite
+  steps:
+    # Every input reaches the script through the environment, never interpolated into the command, so no value can be
+    # read as shell syntax.
+    - name: Build and publish the bundle
+      id: bundle
+      shell: bash
+      env:
+        DIST_BUNDLE_PATHS: ${{ inputs.paths }}
+        DIST_BUNDLE_FORMAT: ${{ inputs.format }}
+        DIST_BUNDLE_FILENAME: ${{ inputs.filename }}
+        DIST_BUNDLE_BRANCH: ${{ inputs.branch }}
+        DIST_BUNDLE_COMMIT_MESSAGE: ${{ inputs.commit-message }}
+        DIST_BUNDLE_PUSH: ${{ inputs.push }}
+      run: |
+        ARGUMENTS=(
+          --paths "$DIST_BUNDLE_PATHS"
+          --format "$DIST_BUNDLE_FORMAT"
+          --filename "$DIST_BUNDLE_FILENAME"
+          --branch "$DIST_BUNDLE_BRANCH"
+          --commit-message "$DIST_BUNDLE_COMMIT_MESSAGE"
+        )
+        if [ "$DIST_BUNDLE_PUSH" = "false" ]; then
+          ARGUMENTS+=(--no-push)
+        fi
+        python3 "$GITHUB_ACTION_PATH/dist_bundle.py" "${ARGUMENTS[@]}"

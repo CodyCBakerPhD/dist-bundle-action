@@ -1,0 +1,106 @@
+name: Testing
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  Testing:
+    name: Testing
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Python
+        uses: actions/setup-python@v7
+        with:
+          # Always the latest stable release, so this never needs bumping.
+          python-version: "3.x"
+
+      - name: Install test dependencies
+        run: python -m pip install --upgrade pip pytest pyyaml
+
+      - name: Run tests
+        run: pytest
+
+  # The tests drive the script. This drives the action itself, as a workflow would, against the runner's own
+  # `python3`. The remote is a local bare repository, so nothing is pushed anywhere real and no write access is needed.
+  Action:
+    name: Action
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Point origin at a local bare repository
+        run: |
+          git init --quiet --bare "$RUNNER_TEMP/remote.git"
+          git remote set-url origin "$RUNNER_TEMP/remote.git"
+          git rev-parse HEAD > "$RUNNER_TEMP/head-before"
+
+      - name: Bundle as a tarball
+        id: tarball
+        uses: ./
+        with:
+          paths: |
+            tests
+            *.yml
+
+      - name: Bundle the same content again
+        id: repeat
+        uses: ./
+        with:
+          paths: |
+            tests
+            *.yml
+
+      - name: Write some JSON to bundle
+        run: |
+          mkdir data
+          echo '{"a": [1, 2]}' > data/one.json
+          echo '{"b": "two"}' > data/two.json
+          echo 'not json' > data/broken.json
+
+      - name: Bundle as JSON
+        id: json
+        uses: ./
+        with:
+          paths: data
+          format: json.gz
+          filename: bundle.json.gz
+          branch: min
+
+      - name: Check what was published
+        env:
+          TARBALL_PUSHED: ${{ steps.tarball.outputs.pushed }}
+          TARBALL_COMMIT: ${{ steps.tarball.outputs.commit }}
+          REPEAT_PUSHED: ${{ steps.repeat.outputs.pushed }}
+          JSON_PUSHED: ${{ steps.json.outputs.pushed }}
+          JSON_PATH: ${{ steps.json.outputs.path }}
+        run: |
+          set -x
+          test "$TARBALL_PUSHED" = true
+          test "$REPEAT_PUSHED" = false
+          test "$JSON_PUSHED" = true
+          test "$(git --git-dir="$RUNNER_TEMP/remote.git" rev-parse refs/heads/dist)" = "$TARBALL_COMMIT"
+          test "$(git --git-dir="$RUNNER_TEMP/remote.git" ls-tree --name-only refs/heads/dist)" = content.tar.gz
+          test "$(git --git-dir="$RUNNER_TEMP/remote.git" rev-list --count refs/heads/dist)" = 1
+          git --git-dir="$RUNNER_TEMP/remote.git" show refs/heads/dist:content.tar.gz | tar -tz | grep -x tests/test_action.py > /dev/null
+          git --git-dir="$RUNNER_TEMP/remote.git" show refs/heads/dist:content.tar.gz | tar -tz | grep -x action.yml > /dev/null
+          git --git-dir="$RUNNER_TEMP/remote.git" show refs/heads/min:bundle.json.gz | cmp - "$JSON_PATH"
+          python3 -c 'import gzip, json, sys; assert json.loads(gzip.open(sys.argv[1]).read()) == {"data/one.json": {"a": [1, 2]}, "data/two.json": {"b": "two"}}' "$JSON_PATH"
+          # The checkout is left where it was.
+          test "$(git rev-parse HEAD)" = "$(cat "$RUNNER_TEMP/head-before")"
+          git diff --quiet HEAD
