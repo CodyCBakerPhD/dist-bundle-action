@@ -5,8 +5,6 @@ The commit is assembled from git plumbing rather than by checking the branch out
 current branch are left exactly as they were and any step may follow this one.
 """
 
-from __future__ import annotations
-
 import argparse
 import gzip
 import json
@@ -16,10 +14,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Sequence
 
 FORMATS = ("tar.gz", "json.gz")
 BOT_NAME = "github-actions[bot]"
