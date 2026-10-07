@@ -55,6 +55,11 @@ It is one minified JSON object mapping each file's path to that file's parsed co
 
 ## Notes
 
+**It keeps only the latest bundle.**
+Each run replaces the branch's one commit, so earlier bundles are not kept.
+That is what keeps the branch from growing, and it makes the bundle a way to share current data rather than an archive.
+For a citable, versioned snapshot, archive a release with a DOI service such as Zenodo instead.
+
 **It pushes with the checkout's credentials.**
 `actions/checkout` persists its token for later git commands, and this uses it to push.
 The job therefore needs `contents: write`, and the checkout must keep the default `persist-credentials: true`.
