@@ -2,7 +2,7 @@
 
 A general action for distributing single-file compressed content (`dist`) of a particular branch of a GitHub repository.
 
-Theis ephemeral branch only ever holds one commit, so it never grows, and anything can fetch the whole bundle in one request.
+This ephemeral branch only ever holds one commit, so it never grows, and anything can fetch the whole bundle in one request.
 
 ```yaml
 name: Publish the dist bundle
