@@ -22,7 +22,7 @@ library so that it runs on the runner's own `python3` with no setup step.
 
 - Never interpolate an input into a `run:` body. Pass it through `env:` so no value can be read as shell syntax. The
   tests reject an expression in any `run:` body.
-- Keep `dist_bundle.py` to the standard library and to the oldest Python a hosted runner ships.
+- Keep `dist_bundle.py` to the standard library.
 - Never check out or switch branches. Callers rely on their checkout being untouched.
 
 ## Code style

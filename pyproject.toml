@@ -7,8 +7,6 @@ markers = [
 
 [tool.ruff]
 line-length = 120
-# The action runs on whatever Python the runner provides, so nothing newer than the oldest one still hosted.
-target-version = "py310"
 
 [tool.ruff.lint]
 select = ["ALL"]
