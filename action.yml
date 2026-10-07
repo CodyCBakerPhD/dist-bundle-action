@@ -8,21 +8,27 @@ branding:
 inputs:
   paths:
     description: >-
-      Newline-separated files, directories or glob patterns to bundle, relative to the repository root. A directory
-      contributes every file beneath it, or only its `.json` files for the `json.gz` format.
+      Newline-separated files, directories or glob patterns to bundle, relative to `root`. A directory contributes
+      every file beneath it, or only its `.json` files for the `json.gz` format.
     required: true
+  root:
+    description: >-
+      Directory the `paths` are relative to, and the root of the published content. Defaults to the repository root.
+      It may be outside the repository, such as a directory under `runner.temp`.
+    required: false
+    default: "."
   format:
     description: >-
-      `tar.gz` for a gzipped tarball of the files as they are, or `json.gz` for one minified, gzipped JSON object
-      mapping each file's path to its parsed content.
+      `tar.gz` for a gzipped tarball of the files as they are, `json.gz` for one minified, gzipped JSON object mapping
+      each file's path to its parsed content, or `files` for the files themselves, each under its path.
     required: false
     default: tar.gz
   filename:
-    description: Name of the bundle on the branch. Empty uses `content.` followed by the format.
+    description: Name of the bundle on the branch. Empty uses `content.` followed by the format. Not used by `files`.
     required: false
     default: ""
   branch:
-    description: Orphan branch to force-push the bundle to. It only ever holds one commit with one file.
+    description: Orphan branch to force-push the bundle to. It only ever holds one commit, with the bundle or the files.
     required: false
     default: dist
   commit-message:
@@ -36,7 +42,7 @@ inputs:
 
 outputs:
   path:
-    description: Local path of the built bundle.
+    description: Local path of the built bundle, or of `root` for the `files` format.
     value: ${{ steps.bundle.outputs.path }}
   pushed:
     description: "`true` when a new commit was pushed, `false` when the branch already held this exact bundle."
@@ -55,6 +61,7 @@ runs:
       shell: bash
       env:
         DIST_BUNDLE_PATHS: ${{ inputs.paths }}
+        DIST_BUNDLE_ROOT: ${{ inputs.root }}
         DIST_BUNDLE_FORMAT: ${{ inputs.format }}
         DIST_BUNDLE_FILENAME: ${{ inputs.filename }}
         DIST_BUNDLE_BRANCH: ${{ inputs.branch }}
@@ -63,6 +70,7 @@ runs:
       run: |
         ARGUMENTS=(
           --paths "$DIST_BUNDLE_PATHS"
+          --root "$DIST_BUNDLE_ROOT"
           --format "$DIST_BUNDLE_FORMAT"
           --filename "$DIST_BUNDLE_FILENAME"
           --branch "$DIST_BUNDLE_BRANCH"
