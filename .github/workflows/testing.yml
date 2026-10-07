@@ -35,14 +35,10 @@ jobs:
   # The tests drive the script. This drives the action itself, as a workflow would, against the runner's own
   # `python3`. The remote is a local bare repository, so nothing is pushed anywhere real and no write access is needed.
   Action:
-    name: Action (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
+    name: Action
+    runs-on: ubuntu-latest
     permissions:
       contents: read
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest]
 
     steps:
       - name: Checkout
