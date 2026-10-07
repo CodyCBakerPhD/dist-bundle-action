@@ -262,3 +262,70 @@ def test_a_failed_push_is_reported_as_a_workflow_error(
 
     assert exit_code == 1
     assert "::error::`git push" in capsys.readouterr().out
+
+
+@pytest.mark.ai_generated
+def test_files_are_published_as_they_are_under_their_paths(repository: pathlib.Path, tmp_path: pathlib.Path) -> None:
+    head = _git("rev-parse", "HEAD", cwd=repository)
+    outputs = tmp_path / "outputs"
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setenv("GITHUB_OUTPUT", str(outputs))
+        exit_code = dist_bundle.main(["--paths", "data", "--format", "files"])
+
+    assert exit_code == 0
+    remote = str(repository.parent / "remote.git")
+    assert _git("--git-dir", remote, "ls-tree", "-r", "--name-only", "refs/heads/dist", cwd=repository).split() == [
+        "data/nested/two.json",
+        "data/notes.txt",
+        "data/one.json",
+    ]
+    assert _git("--git-dir", remote, "rev-list", "--count", "refs/heads/dist", cwd=repository) == "1"
+    assert _remote_file(repository, "dist", "data/nested/two.json") == b'{"b": "two"}'
+    assert _remote_file(repository, "dist", "data/notes.txt") == b"not json"
+    assert "pushed=true\n" in outputs.read_text(encoding="utf-8")
+    # The throwaway index leaves the caller's own index, and its checkout, alone.
+    assert _git("rev-parse", "HEAD", cwd=repository) == head
+    assert _git("status", "--porcelain", cwd=repository) == ""
+
+
+@pytest.mark.ai_generated
+def test_files_can_come_from_outside_the_repository(repository: pathlib.Path, tmp_path: pathlib.Path) -> None:
+    staged = tmp_path / "staged"
+    (staged / "derivatives").mkdir(parents=True)
+    (staged / "derivatives" / "cache.jsonl.gz").write_bytes(gzip.compress(b'{"a": 1}\n', mtime=0))
+    (staged / "dataset_description.json").write_text('{"Name": "cache"}', encoding="utf-8")
+
+    exit_code = dist_bundle.main(["--paths", ".", "--root", str(staged), "--format", "files"])
+
+    assert exit_code == 0
+    remote = str(repository.parent / "remote.git")
+    assert _git("--git-dir", remote, "ls-tree", "-r", "--name-only", "refs/heads/dist", cwd=repository).split() == [
+        "dataset_description.json",
+        "derivatives/cache.jsonl.gz",
+    ]
+    assert gzip.decompress(_remote_file(repository, "dist", "derivatives/cache.jsonl.gz")) == b'{"a": 1}\n'
+
+
+@pytest.mark.ai_generated
+def test_unchanged_files_are_not_pushed_again_and_removed_ones_leave_the_branch(
+    repository: pathlib.Path,
+    tmp_path: pathlib.Path,
+) -> None:
+    outputs = tmp_path / "outputs"
+    remote = str(repository.parent / "remote.git")
+
+    dist_bundle.main(["--paths", "data", "--format", "files"])
+    first_commit = _git("--git-dir", remote, "rev-parse", "refs/heads/dist", cwd=repository)
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setenv("GITHUB_OUTPUT", str(outputs))
+        dist_bundle.main(["--paths", "data", "--format", "files"])
+    assert _git("--git-dir", remote, "rev-parse", "refs/heads/dist", cwd=repository) == first_commit
+    assert "pushed=false\n" in outputs.read_text(encoding="utf-8")
+
+    (repository / "data" / "notes.txt").unlink()
+    dist_bundle.main(["--paths", "data", "--format", "files"])
+
+    published = _git("--git-dir", remote, "ls-tree", "-r", "--name-only", "refs/heads/dist", cwd=repository)
+    assert "data/notes.txt" not in published.split()
+    assert _git("--git-dir", remote, "rev-list", "--count", "refs/heads/dist", cwd=repository) == "1"

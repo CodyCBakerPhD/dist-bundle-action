@@ -1,6 +1,9 @@
 """
 Compress a set of repository paths into one file and force-push it as the sole content of an orphan branch.
 
+The `files` format publishes the files themselves instead, under their paths, for content already in the form its
+consumers read.
+
 The commit is assembled from git plumbing rather than by checking the branch out, so the caller's checkout, index and
 current branch are left exactly as they were and any step may follow this one.
 """
@@ -16,7 +19,7 @@ import tarfile
 import tempfile
 from collections.abc import Iterable, Sequence
 
-FORMATS = ("tar.gz", "json.gz")
+FORMATS = ("tar.gz", "json.gz", "files")
 BOT_NAME = "github-actions[bot]"
 BOT_EMAIL = "41898282+github-actions[bot]@users.noreply.github.com"
 _GLOB_CHARACTERS = frozenset("*?[")
@@ -137,7 +140,12 @@ def validate_filename(filename: str) -> None:
         raise DistBundleError(message)
 
 
-def _git(*arguments: str, stdin: str | None = None, check: bool = True) -> subprocess.CompletedProcess[str]:
+def _git(
+    *arguments: str,
+    stdin: str | None = None,
+    check: bool = True,
+    environment: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
     try:
         return subprocess.run(  # noqa: S603
             ["git", *arguments],  # noqa: S607
@@ -145,7 +153,7 @@ def _git(*arguments: str, stdin: str | None = None, check: bool = True) -> subpr
             capture_output=True,
             text=True,
             check=check,
-            env=_identity_environment(),
+            env={**_identity_environment(), **(environment or {})},
         )
     except subprocess.CalledProcessError as exception:
         message = f"`git {' '.join(arguments)}` failed: {exception.stderr.strip()}"
@@ -170,15 +178,34 @@ def _identity_environment() -> dict[str, str]:
     return environment
 
 
-def publish(bundle: pathlib.Path, *, filename: str, branch: str, commit_message: str, remote: str) -> str | None:
+def bundle_tree(bundle: pathlib.Path, *, filename: str) -> str:
+    """Write a git tree holding only `bundle`, under `filename`."""
+    blob = _git("hash-object", "-w", "--", str(bundle)).stdout.strip()
+    return _git("mktree", stdin=f"100644 blob {blob}\t{filename}\n").stdout.strip()
+
+
+def files_tree(files: Sequence[str], root: pathlib.Path) -> str:
     """
-    Force-push `bundle` as the only file on `branch`, returning the new commit, or `None` when it was already there.
+    Write a git tree holding each of `files` as it is, under its root-relative path.
+
+    A throwaway index builds the nested tree, so the caller's own index is never touched.
+    """
+    blobs = _git("hash-object", "-w", "--stdin-paths", stdin="".join(f"{root / relative}\n" for relative in files))
+    entries = "".join(
+        f"100644 {blob}\t{relative}\n" for blob, relative in zip(blobs.stdout.split(), files, strict=True)
+    )
+    with tempfile.TemporaryDirectory() as scratch:
+        index = {"GIT_INDEX_FILE": str(pathlib.Path(scratch) / "index")}
+        _git("update-index", "--add", "--index-info", stdin=entries, environment=index)
+        return _git("write-tree", environment=index).stdout.strip()
+
+
+def publish(tree: str, *, branch: str, commit_message: str, remote: str) -> str | None:
+    """
+    Force-push `tree` as the whole of `branch`, returning the new commit, or `None` when it was already there.
 
     The branch keeps a single commit, so it never accumulates the history of every bundle it has held.
     """
-    blob = _git("hash-object", "-w", "--", str(bundle)).stdout.strip()
-    tree = _git("mktree", stdin=f"100644 blob {blob}\t{filename}\n").stdout.strip()
-
     # A failed fetch is a branch that does not exist yet. Anything worse fails the push below, with git's own message.
     fetched = _git("fetch", "--quiet", "--no-tags", remote, f"refs/heads/{branch}", check=False)
     if fetched.returncode == 0 and _git("rev-parse", "FETCH_HEAD^{tree}").stdout.strip() == tree:
@@ -205,7 +232,11 @@ def _parse(argv: Sequence[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--paths", required=True, help="Newline-separated files, directories or glob patterns.")
     parser.add_argument("--format", dest="file_format", choices=FORMATS, default="tar.gz")
-    parser.add_argument("--filename", default="", help="Name of the bundle on the branch. Defaults to content.FORMAT.")
+    parser.add_argument(
+        "--filename",
+        default="",
+        help="Name of the bundle on the branch. Defaults to content.FORMAT. Not used by the `files` format.",
+    )
     parser.add_argument("--branch", default="dist")
     parser.add_argument("--commit-message", default="update dist bundle [skip ci]")
     parser.add_argument("--remote", default="origin")
@@ -224,20 +255,28 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
 
     try:
-        validate_filename(filename)
         files = resolve_files(arguments.paths, arguments.root, file_format=arguments.file_format)
-        output_directory.mkdir(parents=True, exist_ok=True)
-        output = output_directory / filename
-        writer = write_json_gz if arguments.file_format == "json.gz" else write_tar_gz
-        count = writer(files, arguments.root, output)
-        size = output.stat().st_size
-        _log(f"Bundled {count} file(s) into {filename} ({size} bytes).")
+        if arguments.file_format == "files":
+            output = arguments.root
+            count = len(files)
+            size = sum((arguments.root / relative).stat().st_size for relative in files)
+            built = f"Gathered {count} file(s) as they are ({size} bytes)"
+            tree = files_tree(files, arguments.root)
+        else:
+            validate_filename(filename)
+            output_directory.mkdir(parents=True, exist_ok=True)
+            output = output_directory / filename
+            writer = write_json_gz if arguments.file_format == "json.gz" else write_tar_gz
+            count = writer(files, arguments.root, output)
+            size = output.stat().st_size
+            built = f"Bundled {count} file(s) into {filename} ({size} bytes)"
+            tree = bundle_tree(output, filename=filename)
+        _log(f"{built}.")
 
         commit = None
         if not arguments.no_push:
             commit = publish(
-                output,
-                filename=filename,
+                tree,
                 branch=arguments.branch,
                 commit_message=arguments.commit_message,
                 remote=arguments.remote,
@@ -255,7 +294,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     _log(outcome)
 
     _append("GITHUB_OUTPUT", f"path={output}\npushed={'true' if commit else 'false'}\ncommit={commit or ''}\n")
-    _append("GITHUB_STEP_SUMMARY", f"Bundled {count} file(s) into `{filename}` ({size} bytes). {outcome}\n")
+    _append("GITHUB_STEP_SUMMARY", f"{built}. {outcome}\n")
     return 0
 
 
