@@ -75,5 +75,9 @@ Each file is then at `https://raw.githubusercontent.com/OWNER/REPOSITORY/dist/<p
 `actions/checkout` persists its token for later git commands, and this uses it to push.
 The job therefore needs `contents: write`, and the checkout must keep the default `persist-credentials: true`.
 
+**It retries a refused push.**
+GitHub refuses the odd push with an internal server error that clears on its own.
+A refused push is tried again after 5, 10, 20 and 40 seconds, and the step fails with git's own message only if the fifth attempt is refused too.
+
 **It commits as the repository's configured identity.**
 Without one, the default is `github-actions[bot]`.
