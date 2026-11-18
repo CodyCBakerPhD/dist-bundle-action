@@ -17,12 +17,16 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import time
 from collections.abc import Iterable, Sequence
 
 FORMATS = ("tar.gz", "json.gz", "files")
 BOT_NAME = "github-actions[bot]"
 BOT_EMAIL = "41898282+github-actions[bot]@users.noreply.github.com"
 _GLOB_CHARACTERS = frozenset("*?[")
+#: Seconds to wait before each retry of a push that failed. GitHub refuses the odd push with an internal server error
+#: that clears on its own, and a refused push otherwise fails the whole job that produced the bundle.
+PUSH_RETRY_DELAYS = (5, 10, 20, 40)
 
 
 class DistBundleError(Exception):
@@ -212,8 +216,19 @@ def publish(tree: str, *, branch: str, commit_message: str, remote: str) -> str 
         return None
 
     commit = _git("commit-tree", tree, "-m", commit_message).stdout.strip()
-    _git("push", "--force", remote, f"{commit}:refs/heads/{branch}")
+    _push(remote, f"{commit}:refs/heads/{branch}")
     return commit
+
+
+def _push(remote: str, refspec: str) -> None:
+    """Force-push `refspec`, retrying a refused push before giving up with git's own message."""
+    for attempt, delay in enumerate(PUSH_RETRY_DELAYS, start=1):
+        refused = _git("push", "--force", remote, refspec, check=False)
+        if refused.returncode == 0:
+            return
+        _log(f"Push attempt {attempt} failed, retrying in {delay} s: {refused.stderr.strip()}")
+        time.sleep(delay)
+    _git("push", "--force", remote, refspec)
 
 
 def _log(line: str) -> None:

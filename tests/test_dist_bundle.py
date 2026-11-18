@@ -16,7 +16,11 @@ def _git(*arguments: str, cwd: pathlib.Path) -> str:
 
 @pytest.fixture
 def repository(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> pathlib.Path:
-    """Create a checkout on `main` with one commit, whose `origin` is a local bare repository."""
+    """
+    Create a checkout on `main` with one commit, whose `origin` is a local bare repository.
+
+    A refused push is retried at once, rather than after the delays a real run waits.
+    """
     remote = tmp_path / "remote.git"
     checkout = tmp_path / "checkout"
     subprocess.run(["git", "init", "--quiet", "--bare", str(remote)], check=True)
@@ -35,6 +39,7 @@ def repository(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> pathl
     _git("commit", "--quiet", "--message", "initial", cwd=checkout)
 
     monkeypatch.chdir(checkout)
+    monkeypatch.setattr(dist_bundle, "PUSH_RETRY_DELAYS", (0, 0, 0, 0))
     monkeypatch.delenv("GITHUB_OUTPUT", raising=False)
     monkeypatch.delenv("GITHUB_STEP_SUMMARY", raising=False)
     return checkout
@@ -162,6 +167,51 @@ def test_publishing_pushes_a_single_file_orphan_and_leaves_the_checkout_alone(
     assert _git("rev-parse", "--abbrev-ref", "HEAD", cwd=repository) == "main"
     assert _git("rev-parse", "HEAD", cwd=repository) == head
     assert _git("status", "--porcelain", cwd=repository) == "M data/one.json"
+
+
+def _refuse_pushes(repository: pathlib.Path, count: int) -> None:
+    """Make the remote refuse the next `count` pushes, as GitHub does with an internal server error."""
+    remaining = repository.parent / "refusals-remaining"
+    remaining.write_text(str(count), encoding="utf-8")
+    hook = repository.parent / "remote.git" / "hooks" / "pre-receive"
+    hook.write_text(
+        "#!/bin/sh\n"
+        f'left=$(cat "{remaining}")\n'
+        'if [ "$left" -gt 0 ]; then\n'
+        f'  echo $((left - 1)) > "{remaining}"\n'
+        '  echo "Internal Server Error" >&2\n'
+        "  exit 1\n"
+        "fi\n",
+        encoding="utf-8",
+    )
+    hook.chmod(0o755)
+
+
+@pytest.mark.ai_generated
+def test_a_refused_push_is_retried(repository: pathlib.Path, tmp_path: pathlib.Path) -> None:
+    _refuse_pushes(repository, 2)
+
+    exit_code = dist_bundle.main(["--paths", "data", "--output-directory", str(tmp_path)])
+
+    assert exit_code == 0
+    assert _remote_file(repository, "dist", "content.tar.gz") == (tmp_path / "content.tar.gz").read_bytes()
+
+
+@pytest.mark.ai_generated
+def test_a_push_refused_every_time_fails_with_gits_message(
+    repository: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(dist_bundle, "PUSH_RETRY_DELAYS", (0, 0))
+    _refuse_pushes(repository, 3)
+
+    with pytest.raises(dist_bundle.DistBundleError, match="Internal Server Error"):
+        dist_bundle.publish(
+            dist_bundle.files_tree(["data/one.json"], repository),
+            branch="dist",
+            commit_message="bundle",
+            remote="origin",
+        )
 
 
 @pytest.mark.ai_generated
